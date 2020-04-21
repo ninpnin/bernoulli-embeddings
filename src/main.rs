@@ -45,29 +45,38 @@ fn clean_string(input_string: String) -> String {
         .to_lowercase()
 }
 
-fn write_vector(vector: Vec<u32>) -> Result<(), WriteNpyError> {
-    let arr: Array1<u32> = Array::from(vector);
+fn write_vector(vector: Vec<u64>) -> Result<(), WriteNpyError> {
+    let arr: Array1<u64> = Array::from(vector);
     let writer = File::create("array.npy")?;
     arr.write_npy(writer)?;
     Ok(())
 }
 
-fn generate_data() {
-	// Fetch dataset name from arguments
-    let args: Vec<String> = env::args().collect();
-    let dataset_name: String = args[1].to_string();
+fn write_embeddings(word: Vec<f32>, context: Vec<f32>) -> Result<(), WriteNpyError> {
+    let word_arr: Array1<f32> = Array::from(word);
+    let context_arr: Array1<f32> = Array::from(context);
+    let word_writer = File::create("word.npy")?;
+    word_arr.write_npy(word_writer)?;
+    let context_writer = File::create("context.npy")?;
+    context_arr.write_npy(context_writer)?;
+    Ok(())
+}
 
-    let mut vocabulary: HashMap<String, u32> = HashMap::new();
+fn generate_data(dataset_name: String) {
+    println!("Fetch data from {}...", dataset_name);
+	// Fetch dataset name from arguments
+
+    let mut vocabulary: HashMap<String, u64> = HashMap::new();
     let mut vocab_size = 0;
 
-    let mut word_count: HashMap<String, u32> = HashMap::new();
+    let mut word_count: HashMap<String, u64> = HashMap::new();
 
     println!("First loop...");
     
-    let dir_path = format!("./dat/{}/raw/", dataset_name);
+    let dir_path = format!("{}", dataset_name);
     let paths = fs::read_dir(dir_path).unwrap();
     
-    let mut data: Vec<u32> = vec![];
+    let mut data: Vec<u64> = vec![];
     for path in paths {
 
         let path_string = path.unwrap().path();
@@ -162,11 +171,23 @@ fn copy_val(input: &[f32], output: &mut[f32], dim: u64, r: f32) {
     let mut whole_sum_slice = [0.0; DIMENSIONALITY as usize];
     
     while x.len() >= 16 {
-        // TODO: multiply all y[i]'s with r
-        let sum_slice = &[x[0]+y[0], x[1] +y[1], x[2] + y[2], x[3] + y[3],
-                        x[4]+y[4], x[5]+ y[5], x[6] + y[6], x[7] + y[7],
-                        x[8]+y[8], x[9]+ y[9], x[10] + y[10], x[11] + y[11],
-                        x[12]+y[12], x[13]+ y[13], x[14] + y[14], x[15] + y[15]];
+        // TODO: multiply all x[i]'s with r
+        let sum_slice = &[x[0] * r  + y[0],
+                          x[1] * r  + y[1],
+                          x[2] * r  + y[2],
+                          x[3] * r  + y[3],
+                          x[4] * r  + y[4],
+                          x[5] * r  + y[5],
+                          x[6] * r  + y[6],
+                          x[7] * r  + y[7],
+                          x[8] * r  + y[8],
+                          x[9] * r  + y[9],
+                          x[10] * r + y[10],
+                          x[11] * r + y[11],
+                          x[12] * r + y[12],
+                          x[13] * r + y[13],
+                          x[14] * r + y[14],
+                          x[15] * r + y[15]];
 
         (&mut whole_sum_slice[..16]).copy_from_slice(sum_slice);
         x = &x[16..];
@@ -326,12 +347,16 @@ fn word2vec(data: Vec<u64>,  data_len: u64, vocab_size: u64, dimensionality: u64
         }
     }
 
-    println!("{:?}", word_vectors);
+    println!("{:?}", &word_vectors[..100]);
+    write_embeddings(word_vectors, context_vectors);
 
 }
 
 
 fn main() {
+    let args: Vec<String> = env::args().collect();
+    let dataset_name: String = args[1].to_string();
+    //generate_data(dataset_name);
 
     println!("Generate random data...");
     let mut rng = thread_rng();
