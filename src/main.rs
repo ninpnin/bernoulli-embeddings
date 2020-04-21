@@ -8,11 +8,17 @@ use ndarray::{Array, Array1};
 use ndarray_npy::{WriteNpyError, WriteNpyExt};
 use rand::prelude::*;
 use packed_simd::f32x16;
-use packed_simd::f32x8;
-
 extern crate rayon;
 use rayon::prelude::*;
-use std::time::{Duration, Instant};
+use std::time::Instant;
+
+const LEARNING_RATE: f32 = 0.025;
+const PASSES: u8 = 1;
+const CONTEXT_SIZE: u64 = 5;
+const NEGATIVE_SAMPLES: u8 = 5;
+const BATCH_SIZE: u64 = 100000;
+const LAMBDA_0: f32 = 0.025;
+const DIMENSIONALITY: u64 = 100;
 
 
 fn read_lines<P>(filename: P) -> io::Result<io::Lines<io::BufReader<File>>>
@@ -101,6 +107,9 @@ fn generate_data() {
     write_vector(data);
 }
 
+// DIFFERENT IMPLEMENTATIONS OF THE DOT PRODUCT
+
+// Only works with multiplies of 16, panics otherwise
 fn parallel_dot(x: &[f32], y: &[f32]) -> f32 {
     let res: f32 = x
         .par_chunks(16)
@@ -111,7 +120,8 @@ fn parallel_dot(x: &[f32], y: &[f32]) -> f32 {
         .sum();
     res
 }
-// Shift slices in place and add 8 elements at a time.
+
+// Fast but ad hoc
 fn unrolled_dot_product(x: &[f32], y: &[f32], dim: u64) -> f32 {
     let n = dim as usize;
     let (mut x, mut y) = (&x[..n], &y[..n]);
@@ -130,7 +140,7 @@ fn unrolled_dot_product(x: &[f32], y: &[f32], dim: u64) -> f32 {
     x.iter().zip(y.iter()).fold(sum, |sum, (&ex, &ey)| sum + (ex * ey))
 }
 
-// Shift slices in place and add 8 elements at a time.
+// Only works with multiplies of 16
 fn efficient_dot(x: &[f32], y: &[f32]) -> f32 {
 
     let res: f32 = x
@@ -143,13 +153,30 @@ fn efficient_dot(x: &[f32], y: &[f32]) -> f32 {
     res
 }
 
-const LEARNING_RATE: f32 = 0.025;
-const PASSES: u8 = 1;
-const CONTEXT_SIZE: u64 = 5;
-const NEGATIVE_SAMPLES: u8 = 5;
-const BATCH_SIZE: u64 = 10000;
-const LAMBDA_0: f32 = 0.025;
-const DIMENSIONALITY: u64 = 100;
+// Add input's values to output
+// [1,2,3], [0,1,0] -> [1,2,3], [1,3,3]
+fn copy_val(input: &[f32], output: &mut[f32], dim: u64, r: f32) {        
+    let n = dim as usize;
+    let (mut x, mut y) = (&input[..n], &output[..n]);
+
+    let mut whole_sum_slice = [0.0; DIMENSIONALITY as usize];
+    
+    while x.len() >= 16 {
+        // TODO: multiply all y[i]'s with r
+        let sum_slice = &[x[0]+y[0], x[1] +y[1], x[2] + y[2], x[3] + y[3],
+                        x[4]+y[4], x[5]+ y[5], x[6] + y[6], x[7] + y[7],
+                        x[8]+y[8], x[9]+ y[9], x[10] + y[10], x[11] + y[11],
+                        x[12]+y[12], x[13]+ y[13], x[14] + y[14], x[15] + y[15]];
+
+        (&mut whole_sum_slice[..16]).copy_from_slice(sum_slice);
+        x = &x[16..];
+        y = &y[16..];
+    }
+
+    // TODO: take care of the part that's not divisible by 16
+    output.copy_from_slice(&whole_sum_slice);
+}
+
 
 fn word2vec(data: Vec<u64>,  data_len: u64, vocab_size: u64, dimensionality: u64) {
 
@@ -173,36 +200,9 @@ fn word2vec(data: Vec<u64>,  data_len: u64, vocab_size: u64, dimensionality: u64
         //let prod1 = efficient_dot(vec1, vec1);
         let prod2 = unrolled_dot_product(vec1, vec1, dim);
         //let prod3 = parallel_dot(vec1, vec1);
-
         //println!("Prods: {} {} {}", prod1, prod2, prod3);
         prod2
 
-    }
-
-    fn copy_val(input: &[f32], output: &mut[f32], dim: u64, r: f32) {
-        // TODO: implement summation
-        // output += input
-        //output.copy_from_slice(input);
-        
-        let n = dim as usize;
-        let (mut x, mut y) = (&input[..n], &output[..n]);
-
-        let mut whole_sum_slice = [0.0; DIMENSIONALITY as usize];
-        
-        while x.len() >= 16 {
-            let sum_slice = &[x[0]+y[0], x[1] +y[1], x[2] + y[2], x[3] + y[3],
-                            x[4]+y[4], x[5]+ y[5], x[6] + y[6], x[7] + y[7],
-                            x[8]+y[8], x[9]+ y[9], x[10] + y[10], x[11] + y[11],
-                            x[12]+y[12], x[13]+ y[13], x[14] + y[14], x[15] + y[15]];
-
-            (&mut whole_sum_slice[..16]).copy_from_slice(sum_slice);
-            x = &x[16..];
-            y = &y[16..];
-        }
-
-        // Take care of any left over elements (if len is not divisible by 16).
-        //x.iter().zip(y.iter()).fold(sum, |sum, (&ex, &ey)| sum + (ex * ey))
-        output.copy_from_slice(&whole_sum_slice);
     }
 
     let mut word_gradient: Vec<f32> = vec![0.0; embedding_len as usize];
@@ -319,7 +319,6 @@ fn word2vec(data: Vec<u64>,  data_len: u64, vocab_size: u64, dimensionality: u64
                     copy_val(&word_slice, &mut context_gradient_slice_after, dimensionality, -sigm);
                     let mut context_gradient_slice_before = &mut context_gradient[context_ix_before..context_ix_before+dim];
 
-
                     copy_val(&word_slice, &mut context_gradient_slice_before, dimensionality, -sigm);
 
                 }
@@ -333,26 +332,21 @@ fn word2vec(data: Vec<u64>,  data_len: u64, vocab_size: u64, dimensionality: u64
 
 
 fn main() {
-    // Fetch dataset name from arguments
-
-    let mut rng = thread_rng();
-
-    let mut data: Vec<u64> = vec![];
-    let data_len = 1000000 as u64;
-    let vocab_size = 3700;
 
     println!("Generate random data...");
-    for i in 0..data_len {
+    let mut rng = thread_rng();
+    let data_len = 1000000 as u64;
+    let vocab_size = 3700;
+    let data: Vec<u64> = (0..data_len).map(|i| {
         if i % 100000 == 0 {
             println!("i: {}", i);
         }
-        let datapoint = rng.gen_range(0, vocab_size);
-        data.push(datapoint);
-    }
+        rng.gen_range(0, vocab_size)
+    }).collect();
+
     println!("Done.");
-    let dimensionality = DIMENSIONALITY;
 
-    word2vec(data, data_len, vocab_size, dimensionality);
+    word2vec(data, data_len, vocab_size, DIMENSIONALITY);
 
-    println!("Moi");
+    println!("Traineds.");
 }
